@@ -762,12 +762,12 @@ def lin_reg_report(
 
     t = lr_formula(target).cast(dtype)
     if weights is None:
-        cols = [t.var(), t]
+        cols = [t]
         cols.extend(lr_formula(z) for z in x)
         symbol = cfg._which_lin_reg("pl_lin_reg_report")
     else:
         w = lr_formula(weights)
-        cols = [w.cast(dtype).rechunk(), t.var(), t]
+        cols = [w.cast(dtype).rechunk(), t]
         cols.extend(lr_formula(z) for z in x)
         symbol = cfg._which_lin_reg("pl_wls_report")
 

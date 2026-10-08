@@ -92,7 +92,7 @@ def query_adj_r2(actual: str | pl.Expr, pred: str | pl.Expr, p: int) -> pl.Expr:
     pred
         A Polars expression representing predictions
     p
-        The number of explanatory variables
+        The number of explanatory variables, not counting the intercept
     """
     actual_expr = to_expr(actual)
     pred_expr = to_expr(pred)
@@ -100,7 +100,7 @@ def query_adj_r2(actual: str | pl.Expr, pred: str | pl.Expr, p: int) -> pl.Expr:
     ss_res = diff.dot(diff)
     diff2 = actual_expr - actual_expr.mean()
     ss_tot = diff2.dot(diff2)
-    df_res = actual_expr.len() - p
+    df_res = actual_expr.len() - p - 1
     df_tot = actual_expr.len() - 1
     return 1.0 - (ss_res / df_res) / (ss_tot / df_tot)
 

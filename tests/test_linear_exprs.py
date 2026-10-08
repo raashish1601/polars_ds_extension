@@ -201,6 +201,43 @@ def test_hc_lin_reg_report():
         assert np.all((pds_se - sm_se) < 1e-7)
 
 
+@pytest.mark.parametrize("add_bias", [True, False])
+@pytest.mark.parametrize("weighted", [False, True])
+@pytest.mark.parametrize("f64", [True, False])
+def test_lin_reg_report_r2(add_bias, weighted, f64):
+    import statsmodels.api as sm
+
+    rng = np.random.default_rng(1)
+    n = 50
+    x = rng.normal(size=(n, 3))
+    y = x @ np.array([1.0, 0.5, -0.2]) + 0.3 + rng.normal(size=n)
+    w = rng.uniform(0.5, 2.0, size=n)
+    df = pl.DataFrame({"x1": x[:, 0], "x2": x[:, 1], "x3": x[:, 2], "y": y, "w": w})
+
+    pds.config.LIN_REG_EXPR_F64 = f64
+    try:
+        report = df.select(
+            pds.lin_reg_report(
+                "x1",
+                "x2",
+                "x3",
+                target="y",
+                add_bias=add_bias,
+                weights="w" if weighted else None,
+            ).alias("report")
+        ).unnest("report")
+    finally:
+        pds.config.LIN_REG_EXPR_F64 = True
+
+    X = sm.add_constant(x) if add_bias else x
+    model = sm.WLS(y, X, weights=w) if weighted else sm.OLS(y, X)
+    results = model.fit()
+
+    tol = 1e-8 if f64 else 1e-4
+    assert np.allclose(report["r2"].to_numpy(), results.rsquared, atol=tol)
+    assert np.allclose(report["adj_r2"].to_numpy(), results.rsquared_adj, atol=tol)
+
+
 def test_f32_lin_reg():
     # If they run, they are correct. This is because the underlying functions in src/linalg/ are all
     # generic

@@ -821,25 +821,43 @@ fn pl_lr_pred(inputs: &[Series], kwargs: LRKwargs) -> PolarsResult<Series> {
     }
 }
 
+/// R^2 and adjusted R^2 of a fitted linear regression, defined as in statsmodels: the total sum
+/// of squares is taken around the (weighted) mean of y when the model has a bias term and around
+/// zero otherwise, and the adjustment uses the residual degrees of freedom `dof`.
+fn r2_and_adj_r2(
+    y: &[f64],
+    resid: &[f64],
+    weights: Option<&[f64]>,
+    add_bias: bool,
+    dof: f64,
+) -> (f64, f64) {
+    let n = y.len();
+    let w = |i: usize| weights.map_or(1.0, |w| w[i]);
+    let center = if add_bias {
+        let w_sum = (0..n).fold(0., |acc, i| acc + w(i));
+        (0..n).fold(0., |acc, i| acc + w(i) * y[i]) / w_sum
+    } else {
+        0.
+    };
+    let ss_res = (0..n).fold(0., |acc, i| acc + w(i) * resid[i].powi(2));
+    let ss_tot = (0..n).fold(0., |acc, i| acc + w(i) * (y[i] - center).powi(2));
+    let r2 = 1.0 - ss_res / ss_tot;
+    let adj_r2 = 1.0 - (1.0 - r2) * (n as f64 - add_bias as usize as f64) / dof;
+    (r2, adj_r2)
+}
+
 #[polars_expr(output_type_func=report_output)]
 fn pl_lin_reg_report(inputs: &[Series], kwargs: LRKwargs) -> PolarsResult<Series> {
     let add_bias = kwargs.bias;
     let se_type = StandardError::from(kwargs.std_err);
     let null_policy = NullPolicy::try_from(kwargs.null_policy)
         .map_err(|e| PolarsError::ComputeError(e.into()))?;
-    // index 0 is y_var, 1 is target y. Skip
-    let binding = if inputs[0].dtype() == &DataType::Float64 {
-        inputs[0].clone()
-    } else {
-        inputs[0].cast(&DataType::Float64)?
-    };
-    let y_var = binding.f64().unwrap();
-    let y_var = y_var.get(0).unwrap_or(f64::NAN);
+    // index 0 is target y
     let mut name_builder = StringChunkedBuilder::new(
         "features".into(),
-        inputs.len().abs_diff(2) + (add_bias) as usize,
+        inputs.len().abs_diff(1) + (add_bias) as usize,
     );
-    for s in inputs[2..].iter().map(|s| s.name()) {
+    for s in inputs[1..].iter().map(|s| s.name()) {
         name_builder.append_value(s);
     }
     if add_bias {
@@ -847,7 +865,7 @@ fn pl_lin_reg_report(inputs: &[Series], kwargs: LRKwargs) -> PolarsResult<Series
     }
     // Copy data
     // Target y is at index 0
-    match series_to_mat_for_lr(&inputs[1..], add_bias, null_policy) {
+    match series_to_mat_for_lr(inputs, add_bias, null_policy) {
         Ok((mat_slice, nrows, nfeats, _)) => {
             let y = MatRef::from_column_major_slice(&mat_slice[..nrows], nrows, 1);
             let x = MatRef::from_column_major_slice(&mat_slice[nrows..], nrows, nfeats);
@@ -865,10 +883,13 @@ fn pl_lin_reg_report(inputs: &[Series], kwargs: LRKwargs) -> PolarsResult<Series
             let res = y - x * &coeffs;
 
             // r2, adj_r2
-            let nf64 = nrows as f64;
-            let ratio = res.col(0).squared_norm_l2() / (y_var * nf64);
-            let r2 = 1.0 - ratio;
-            let adj_r2 = 1.0 - ratio * ((nrows - 1) as f64 / (dof - 1.0));
+            let (r2, adj_r2) = r2_and_adj_r2(
+                &mat_slice[..nrows],
+                res.col_as_slice(0),
+                None,
+                add_bias,
+                dof,
+            );
 
             // std err
             let std_err = match se_type {
@@ -995,27 +1016,20 @@ fn pl_wls_report(inputs: &[Series], kwargs: LRKwargs) -> PolarsResult<Series> {
     };
     let weights = binding.f64().unwrap();
     let weights = weights.cont_slice().unwrap();
-    let binding2 = if inputs[1].dtype() == &DataType::Float64 {
-        inputs[1].clone()
-    } else {
-        inputs[1].cast(&DataType::Float64)?
-    };
-    let y_var = binding2.f64().unwrap();
-    let y_var = y_var.get(0).unwrap_or(f64::NAN);
-    // index 0 is weights, 1 is y_var, 2 is target y. Skip them
+    // index 0 is weights, 1 is target y. Skip them
     let mut name_builder = StringChunkedBuilder::new(
         "features".into(),
-        inputs.len().abs_diff(3) + (add_bias) as usize,
+        inputs.len().abs_diff(2) + (add_bias) as usize,
     );
-    for s in inputs[3..].iter().map(|s| s.name()) {
+    for s in inputs[2..].iter().map(|s| s.name()) {
         name_builder.append_value(s);
     }
     if add_bias {
         name_builder.append_value("__bias__");
     }
     // Copy data
-    // Target y is at index 2, weights at index 0
-    match series_to_mat_for_lr(&inputs[2..], add_bias, null_policy) {
+    // Target y is at index 1, weights at index 0
+    match series_to_mat_for_lr(&inputs[1..], add_bias, null_policy) {
         Ok((mat_slice, nrows, nfeats, _)) => {
             let y = MatRef::from_column_major_slice(&mat_slice[..nrows], nrows, 1);
             let x = MatRef::from_column_major_slice(&mat_slice[nrows..], nrows, nfeats);
@@ -1040,10 +1054,13 @@ fn pl_wls_report(inputs: &[Series], kwargs: LRKwargs) -> PolarsResult<Series> {
                 (0..y.nrows()).fold(0., |acc, i| acc + weights[i] * res.get(i, 0).powi(2)) / dof;
 
             // r2, adj_r2
-            let nf64 = nrows as f64;
-            let ratio = res.col(0).squared_norm_l2() / (y_var * nf64);
-            let r2 = 1.0 - ratio;
-            let adj_r2 = 1.0 - ratio * ((nrows - 1) as f64 / (dof - 1.0));
+            let (r2, adj_r2) = r2_and_adj_r2(
+                &mat_slice[..nrows],
+                res.col_as_slice(0),
+                Some(weights),
+                add_bias,
+                dof,
+            );
 
             // std err
             let std_err = (0..nfeats)

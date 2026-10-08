@@ -263,6 +263,19 @@ def test_log_loss():
     assert np.isclose(res, ans, rtol=1e-10)
 
 
+def test_adj_r2():
+    import statsmodels.api as sm
+
+    rng = np.random.default_rng(3)
+    n = 60
+    x = rng.normal(size=(n, 2))
+    y = x @ np.array([0.8, -0.4]) + 1.0 + rng.normal(size=n)
+    results = sm.OLS(y, sm.add_constant(x)).fit()
+    df = pl.DataFrame({"y": y, "pred": results.fittedvalues})
+    result = df.select(pds.query_adj_r2("y", "pred", p=2)).item()
+    assert np.isclose(result, results.rsquared_adj)
+
+
 def test_dcg_score():
     from sklearn.metrics import dcg_score
 
